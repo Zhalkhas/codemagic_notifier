@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +24,10 @@ var (
 
 func init() {
 	functions.HTTP("codemagic_notifier", codeMagicNotifierFunction)
+	fmt.Println("ENV VARS:")
+	fmt.Println("TELEGRAM_BOT_TOKEN:", telegramBotToken)
+	fmt.Println("TELEGRAM_CHAT_ID:", telegramChatID)
+	fmt.Println("CODEMAGIC_API_KEY:", codeMagicAPIKey)
 }
 
 func codeMagicNotifierFunction(w http.ResponseWriter, r *http.Request) {
@@ -32,8 +37,11 @@ func codeMagicNotifierFunction(w http.ResponseWriter, r *http.Request) {
 		log.Panicln(fmt.Errorf("could not decode request body: %w", err))
 		return
 	}
-
-	message := "New build is available:\n"
+	reqJson, err := json.Marshal(request)
+	if err != nil {
+		log.Println("request:", string(reqJson))
+	}
+	message := "<b>New build is available:</b>\n"
 
 	for _, artifact := range request {
 		body := strings.NewReader(
@@ -51,17 +59,20 @@ func codeMagicNotifierFunction(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var artifactPublicUrl CodeMagicArtifactPublicUrl
-		err = json.NewDecoder(resp.Body).Decode(&artifact)
+		respBody, err := io.ReadAll(resp.Body)
+		log.Println("public url response:", string(respBody))
+		err = json.Unmarshal(respBody, &artifactPublicUrl)
 		if err != nil {
 			log.Println(fmt.Errorf("could not decode public url response: %w", err))
 			continue
 		}
 		message += fmt.Sprintf(
-			"%s (%s): %s\nExpires at:%s\n",
+			"%s (%s):\n<a href=\"%s\">[CodeMagic URL]</a>\n<a href=\"%s\">[Public URL]</a>\nExpires at: %s\n",
 			artifact.Name,
 			artifact.VersionName,
+			artifact.Url,
 			artifactPublicUrl.Url,
-			artifactPublicUrl.ExpiresAt.Format("01-02-2006 15:04:05 Mon"),
+			artifactPublicUrl.ExpiresAt.String(),
 		)
 	}
 	chatID, err := strconv.ParseInt(telegramChatID, 10, 64)
@@ -70,8 +81,9 @@ func codeMagicNotifierFunction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sendMessageRequest := SendMessageRequest{
-		ChatID: chatID,
-		Text:   message,
+		ChatID:    chatID,
+		Text:      message,
+		ParseMode: "HTML",
 	}
 
 	req, err := json.Marshal(sendMessageRequest)
@@ -79,10 +91,20 @@ func codeMagicNotifierFunction(w http.ResponseWriter, r *http.Request) {
 		log.Println(fmt.Errorf("could not marshal request: %w", err))
 		return
 	}
-	_, err = http.Post(sendMessageUrl, "application/json", bytes.NewReader(req))
+	resp, err := http.Post(sendMessageUrl, "application/json", bytes.NewReader(req))
 	if err != nil {
 		log.Println(fmt.Errorf("could not send request: %w", err))
 		return
 	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.Println(fmt.Errorf("unexpected status code: %d", resp.StatusCode))
+		b, err := io.ReadAll(resp.Body)
+		if err == nil {
+			log.Println(string(b))
+		}
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
