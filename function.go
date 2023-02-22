@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
 	"io"
 	"log"
 	"net/http"
@@ -11,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
 )
 
 var (
@@ -44,36 +43,38 @@ func codeMagicNotifierFunction(w http.ResponseWriter, r *http.Request) {
 	message := "<b>New build is available:</b>\n"
 
 	for _, artifact := range request {
-		body := strings.NewReader(
-			fmt.Sprintf(
-				`{"expiresAt": %d}`,
-				time.Now().Add(time.Hour*24*31*6).Unix(),
-			),
-		)
-		req, err := http.NewRequest("POST", artifact.Url+"/public-url", body)
-		req.Header.Add("x-auth-token", codeMagicAPIKey)
-		req.Header.Add("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			log.Println(fmt.Errorf("could not get public url: %w", err))
-			continue
+		if artifact.Type == "apk" {
+			body := strings.NewReader(
+				fmt.Sprintf(
+					`{"expiresAt": %d}`,
+					time.Now().Add(time.Hour*24*31*6).Unix(),
+				),
+			)
+			req, err := http.NewRequest("POST", artifact.Url+"/public-url", body)
+			req.Header.Add("x-auth-token", codeMagicAPIKey)
+			req.Header.Add("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Println(fmt.Errorf("could not get public url: %w", err))
+				continue
+			}
+			var artifactPublicUrl CodeMagicArtifactPublicUrl
+			respBody, err := io.ReadAll(resp.Body)
+			log.Println("public url response:", string(respBody))
+			err = json.Unmarshal(respBody, &artifactPublicUrl)
+			if err != nil {
+				log.Println(fmt.Errorf("could not decode public url response: %w", err))
+				continue
+			}
+			message += fmt.Sprintf(
+				"%s (%s):\n<a href=\"%s\">[CodeMagic URL]</a>\n<a href=\"%s\">[Public URL]</a>\nExpires at: %s\n",
+				artifact.Name,
+				artifact.VersionName,
+				artifact.Url,
+				artifactPublicUrl.Url,
+				artifactPublicUrl.ExpiresAt.String(),
+			)
 		}
-		var artifactPublicUrl CodeMagicArtifactPublicUrl
-		respBody, err := io.ReadAll(resp.Body)
-		log.Println("public url response:", string(respBody))
-		err = json.Unmarshal(respBody, &artifactPublicUrl)
-		if err != nil {
-			log.Println(fmt.Errorf("could not decode public url response: %w", err))
-			continue
-		}
-		message += fmt.Sprintf(
-			"%s (%s):\n<a href=\"%s\">[CodeMagic URL]</a>\n<a href=\"%s\">[Public URL]</a>\nExpires at: %s\n",
-			artifact.Name,
-			artifact.VersionName,
-			artifact.Url,
-			artifactPublicUrl.Url,
-			artifactPublicUrl.ExpiresAt.String(),
-		)
 	}
 	chatID, err := strconv.ParseInt(telegramChatID, 10, 64)
 	if err != nil {
